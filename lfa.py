@@ -12,8 +12,7 @@ class LocSE(nn.Module):
 		super().__init__()
 		self.P = point_cloud
 		self.K = k
-		self.MLP = nn.Linear(10,6)
-
+		self.MLP = nn.Linear(10,3)
 
 	def rel_pos_enc(self, i, knn_loc):
 		pi  = self.P[i,:3]
@@ -34,24 +33,31 @@ class LocSE(nn.Module):
 	def forward(self, i):
 		N = self.knn(i)
 		R = self.rel_pos_enc(i, N[:,:3])
-		F = torch.cat((N,R), dim=1)
+		F = torch.cat((N[:,:3],R), dim=1)
 		return F
 
-
-
-#debugging
-print(LocSE(10, data).forward(42).size())
+# SharedMLP = nn.Sequential(
+# 	nn.Linear(1,),
+# 	nn.ReLU(),
+# 	nn.Linear(),
+# );
 
 class AttentivePool(nn.Module):
-	def __init__(self):
+	def __init__(self, shape):
 		super().__init__()
-		pass
+		self.attention_scores = torch.randn(shape, requires_grad=True)
 
 	def forward(self, x):
-		pass
+		print("Input shape:", x.size())
+		print("Attention score:", self.attention_scores.size())
+		y = x*self.attention_scores
+		print(y.size())
+		print(y.sum(dim=1).size())
+		print("Hadamard product: ",y.size())
 
-	def debug():
-		pass
+#debugging
+lse_out = LocSE(10, data).forward(42)
+AttentivePool((10,6)).forward(lse_out)
 
 class DilRes(nn.Module):
 	def __init__(self):
