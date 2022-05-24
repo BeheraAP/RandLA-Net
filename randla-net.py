@@ -3,14 +3,54 @@ from torch import nn
 from torch import linalg
 
 print("CUDA Available: ", torch.cuda.is_available())
+class SharedMLP(nn.Module):
+	def __init__(self, in_chan, out_chan, transpose = False):
+		super().__init__()
+		if not transpose:
+			self.conv = nn.Conv2d(in_chan, out_chan,
+				kernel_size=[1,1], padding='valid')
+		else:
+			self.conv = nn.ConvTranspose2d(in_chan, out_chan,
+				kernel_size=[1, 1])
+	def forward(self, x):
+		# Input : [0:B, 1:N, 2:in_chan ]
+		# Output: [0:B, 1:N, 2:out_chan]
+		x = x.permute(0,2,1).unsqueeze(-1)
+		return self.conv(x).squeeze().permute(0,2,1)
+
+# print("From SharedMLP: ",
+# 	SharedMLP(6, 8)(
+# 		torch.randn(32, 100, 6)
+# 	).size())
+# exit()
+
 class LocSE(nn.Module):
-	def __init__(self, k, d):
+	def __init__(self, d_in, k):
 		super().__init__()
 		self.k = k
-		self.d = d
-		self.MLP = nn.Linear(in_features= 10, out_features = d)
+		self.d_in = d_in
+		self.mlp = nn.Sequential(
+			# concatenation of [3,3,3,1]=10 as input
+			SharedMLP(10, d_in),
+			nn.ReLU(), )
 
-	def gather_neighbor(self, xyz_feat, p_idx):
+	def gather_neighbor(self, xyz, feat, idx):
+		# Input
+		# xyz : [B, N, 3]	x,y,z co-ordinates for N points
+		# feat: [B, N, d_in] 	d_in features of N points
+		# idx : [B, N, K]	indices of K near N points
+
+		# Do something here
+		B,N,d_in=feat.size()
+
+		# Output
+		# p: [B, N, K, 3]	x,y,x of K-neighbors for each N points
+		# f: [B, N, K, d_in]	d_in features of above points
+		return (
+			torch.randn(B, N, self.k, 3),
+			torch.randn(B, N, self.k, self.d_in)
+		)
+
 		assert self.k<=len(xyz_feat),\
 		"k = %d should be less than n = %d"%(self.k, len(xyz_feat))
 
@@ -21,109 +61,127 @@ class LocSE(nn.Module):
 		_, neighbor = norm.sort()
 		return neighbor[:self.k]
 
-	def relative_pos_enc(self, xyz, p_idx, k_idx):
-		# Assertion checks
-		assert p_idx<len(xyz),\
-		"point index = %d, out of range %d"%(p_idx,len(xyz_feat))
-		assert k_idx<self.k,\
-		"k_idx = %d is out of range, %d of K-NN."%(k_idx, self.k)
 
-		center_point = xyz[p_idx]
-		nn = xyz[k_idx]
-		nn_diff = nn-center_point
-		nn_diff_norm = linalg.norm(nn_diff).unsqueeze(-1)
-		input = torch.cat((center_point, nn, nn_diff, nn_diff_norm))
+	def relative_pos_enc(self, xyz, idx):
+		# Input
+		# xyz: [B, N, K, 3]	x,y,z co-ordinates for N points
+		# idx: [B, N, K]	indices of k nearest neighbor of N points
+
+		# Do something
+		B,N,_,d_in=xyz.size()
+
+		# Output
+		# r: [B, N, K, d_in]
+		return torch.randn(B, N, self.k, self.d_in)
+
+		for p_idx in idx:
+			center_point = xyz[:, :, p_idx]
+			print(center_point.size())
+			exit()
+			nn = xyz[k_idx]
+			nn_diff = nn-center_point
+			nn_diff_norm = linalg.norm(nn_diff).unsqueeze(-1)
+			input = torch.cat((center_point, nn, nn_diff, nn_diff_norm))
 		return self.MLP(input)
+		# Returns a batch B of N points of size 10, r: [B, N, K, d_out]
 
-	def forward(self, xyz_feat, idx):
-		nn_idx = self.gather_neighbor(xyz_feat, idx)
+	def forward(self, xyz, feat, idx):
+		# Input
+		# xyz:  [B, N, 3]	x,y,z co-ordinates for N points
+		# feat: [B, N, d_in]	d features of N points
+		# idx:  [B, N, k]	k indices for N neighbor points
 
-		r = torch.tensor([])
-		for j in range(self.k):
-			r = torch.cat((r, self.relative_pos_enc(
-				xyz_feat[:,:3], idx, j)))
-		r = r.reshape(-1, 3)
-		f = torch.index_select(xyz_feat, 0, nn_idx)[:,:3]
+		# Gather neighbor
+		p,f = self.gather_neighbor(xyz, feat, idx)
+		print("After gathering neighbors: ", p.size(),f.size())
 
-		F = torch.cat((r,f), dim=1)
+		# Relative position encoding
+		# Input : xyz=[B, N, K, 3], idx=[B, N, K]
+		# Output: [B, N, K, d_in]
+		r = self.relative_pos_enc(p, idx)
+		print("Relative pos enc: ", r.size())
+		print("Features        : ", f.size())
+
+		# Concatenation
+		# Input : r=[B, N, K, d], f=[B, N, K, d]
+		# Output: rf=[B, N, K, 2d]
+		F = torch.cat((r,f), dim=3)
+		print("After concatenation: ", F.size());
+
+		# Returns a batch of B points with
+		# feat: [B, N, K, d_in]
 		return F
 
-F = LocSE(k=8, d=3).forward(torch.randn(10, 6), 4)
+B,N,k = 32, 100, 8
+LocSE(d_in=3, k=k)(
+	torch.randn(B, N, 3),
+	torch.randn(B, N, 3),
+	torch.tensor(torch.rand(B, N, k)*k, dtype=torch.int8)
+)
 
 class AttentionPool(nn.Module):
-	def __init__(self, k, d_in, d_out):
+	def __init__(self, d_in, d_out):
 		super().__init__()
 		self.g = nn.Sequential(
-			nn.Linear(
-				in_features  = 2*d_in,
-				out_features = 2*d_in,
-				bias=False),
-			nn.Softmax(dim=1))
-		# self.SharedMLP = nn.Conv1d(
-		# 	in_channels = 
-		# )
-		print(self.g)
+			nn.Linear(d_in, d_in, bias=False),
+			nn.Softmax(dim=1),)
+		self.mlp= SharedMLP(d_in, d_out)
 
 	def forward(self, F):
-		bs, n, k, d = F.size()
-		f  = F.reshape((-1, k, d))
-		print(f.size())
+		# Input
+		# F: [B, N, K, d_in]
 
-		exit()
-		s = self.g(F)
-		print(s, s.size())
-		hadamard = F*s
-		print(hadamard, hadamard.size())
-		print(hadamard.T.sum(dim=1))
+		print("Input to AttentionPool %s: %s" %(self.g, F.size()))
+		scores = self.g(F)
+		# Output
+		# F: [B, N, d_out]
+		return self.mlp((scores*F).sum(dim=2))
 
-AttentionPool(k=8, d_in=3, d_out=10).forward(torch.randn(32, 200, 8, 3))
-
-exit()
-
+# print("From AttentionPool: ",
+# 	AttentionPool(6, 10)(
+# 		torch.randn(B, N, k, 6)
+# 	).size())
+# exit()
 
 class DilatedResBlock(nn.Module):
-	def __init__(self, d_in, d_out ):
+	def __init__(self, d_in, d_out, k):
 		super().__init__()
+		self.k = k
 		self.layers = nn.ModuleList([
-			nn.Conv2d(
-				in_channels  = d_in,
-				out_channels = d_out//2,
-				kernel_size  = [1,1],
-				padding      = 'valid', ),
-			nn.ReLU(),
-			LocSE(k=3),
-			AttentionPool(),
-			LocSE(k=3),
-			AttentionPool(),
-			nn.Conv2d(
-				in_channels  = d_in,
-				out_channels = 2*d_out,
-				kernel_size  = [1,1],
-				padding      = 'valid', ),
+			SharedMLP(d_in, d_out//2),
+			nn.LeakyReLU(.2),
+			LocSE(d_out//2, k),
+			AttentionPool(d_out, d_out//2),
+			LocSE(d_out, k),
+			AttentionPool(d_out, d_out),
+			SharedMLP(d_out, 2*d_out),
 		])
-		self.shortcut = nn.ModuleList([
-			nn.Conv2d(
-				in_channels  = d_in,
-				out_channels = 2*d_out,
-				kernel_size  = [1,1],
-				padding      = 'valid', ),
-			nn.BatchNorm1d(2*d_out),
-		])
+		self.shortcut = SharedMLP(d_in, 2*d_out)
 		self.lrelu = nn.LeakyReLU()
 
-	def forward(self, f):
-		fpc = f
+	def forward(self, xyz, feat):
+		# Input
+		# xyz : [B, N, 3]
+		# feat: [B, N, d_in]
+
+		print(xyz.size(), feat.size())
+		idx = [i for i in range(10)]
+		sc = self.shortcut(feat)
 		for L in self.layers:
-			fpc = L(fpc)
+			if L.__class__.__name__ == 'LocSE':
+				feat = L(xyz, feat, idx)
+			else:
+				feat = L(feat)
 
-		sc = f
-		for L in self.layers:
-			sc = L(sc)
+			print("%-20s%s"%(L.__class__.__name__, feat.size()),
+				flush=True)
 
-		return self.lrelu(sc+fpc)
+		# return self.lrelu(sc+feat)
 
-
-
+DilatedResBlock(d_in=3, d_out=10, k=10)(
+	torch.rand(32,100,3),
+	torch.randn(32,100,3))
+exit()
 N,d_in = 100, 3
 DilatedResBlock(d_in, 6).forward(torch.randn(d_in, N, 3))
 class RandLANet(nn.Module):
